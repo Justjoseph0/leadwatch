@@ -8,6 +8,10 @@ import { checkAlerts } from './alerts.js';
 const LEADS_FILE = path.resolve('leads.jsonl');
 const MAX_CONCURRENCY = 8;
 
+// Drop near-empty junk pages below this score. Legitimate (if basic)
+// businesses usually score 35+; sub-35 is mostly placeholder or thin sites.
+const MIN_QUALITY_TO_LOG = 35;
+
 // Simple concurrency-limited queue
 class Queue {
   constructor(concurrency) {
@@ -98,6 +102,9 @@ async function processDomain(domain) {
   }
 
   if (!lead) return;
+
+  // Drop low-quality junk before it reaches the DB / JSONL / alerts.
+  if (lead.qualityScore < MIN_QUALITY_TO_LOG) return;
 
   await appendLead(lead);
 

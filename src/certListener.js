@@ -20,7 +20,12 @@ const SKIP_SUFFIXES = [
 ];
 
 // Very common wildcard/internal subdomain prefixes to drop.
-const SKIP_PREFIXES = ["mail.", "webmail.", "autodiscover.", "ns1.", "ns2.", "mta-sts.", "smtp.", "cpanel.", "webdisk."];
+// Includes staging/dev/preview prefixes: these resolve to real, non-parked
+// pages that pass content checks but aren't the actual business site.
+const SKIP_PREFIXES = [
+  "mail.", "webmail.", "autodiscover.", "ns1.", "ns2.", "mta-sts.", "smtp.", "cpanel.", "webdisk.",
+  "staging.", "dev.", "test.", "preview.", "demo.", "beta.", "uat.", "qa.", "sandbox.",
+];
 
 function isLikelyNoise(domain) {
   const d = domain.toLowerCase();

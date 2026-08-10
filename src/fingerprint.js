@@ -7,6 +7,39 @@ const SKIP_HOSTNAME_SUFFIXES = [
   '.zendesk.com',
 ];
 
+/**
+ * Reject preview/staging deploy hostnames from hosting platforms. These serve
+ * real, non-parked content that passes every content check, but they are never
+ * the actual business site — the live site lives on a custom domain. Rejected
+ * outright regardless of page content.
+ */
+function isPreviewHostname(hostname) {
+  const h = hostname.toLowerCase();
+
+  // Webflow's default staging domain, used until a custom domain is connected.
+  // Once the site is live it is served from the custom domain, so every
+  // *.webflow.io host is staging.
+  if (h.endsWith('.webflow.io')) return true;
+
+  // Vercel preview deploys: <project>-git-<branch>-<scope>.vercel.app or
+  // <project>-<hash>-<scope>.vercel.app. The bare <project>.vercel.app
+  // production alias has no such preview marker, so keep it.
+  if (h.endsWith('.vercel.app')) {
+    const segments = h.slice(0, -'.vercel.app'.length).split('-');
+    if (segments.includes('git')) return true; // git branch preview
+    // Auto-generated deploy hash: an 8+ char alphanumeric segment with a digit.
+    if (segments.some((s) => s.length >= 8 && /[0-9]/.test(s) && /^[a-z0-9]+$/.test(s))) return true;
+  }
+
+  // Netlify deploy/branch/preview deploys separate the deploy context
+  // (deploy-preview-N, a branch name, or a permalink hash) from the site name
+  // with a `--`: e.g. deploy-preview-12--site, staging--site, 5f3a2b1c--site.
+  // Production is just <site>.netlify.app with no `--`.
+  if (h.endsWith('.netlify.app') && h.includes('--')) return true;
+
+  return false;
+}
+
 // Terms in title or body text that indicate gambling/betting sites
 const GAMBLING_TERMS = [
   'slot', 'slots', 'casino', 'betting odds', 'sportsbook',
@@ -86,6 +119,7 @@ export async function fingerprintDomain(domain) {
   // Reject known noise hostnames before making any network request
   const lowerDomain = domain.toLowerCase();
   if (SKIP_HOSTNAME_SUFFIXES.some((s) => lowerDomain.endsWith(s))) return null;
+  if (isPreviewHostname(lowerDomain)) return null;
 
   const fetched = await fetchDomain(domain);
   if (!fetched) return null;
