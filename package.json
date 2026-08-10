@@ -1,0 +1,15 @@
+{
+  "name": "leadwatch",
+  "version": "1.0.0",
+  "description": "Real-time lead discovery via certificate transparency logs",
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file=.env src/index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.112.2",
+    "cheerio": "^1.0.0",
+    "resend": "^6.18.1",
+    "ws": "^8.18.0"
+  }
+}
