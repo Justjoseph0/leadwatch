@@ -1,6 +1,22 @@
 import * as cheerio from 'cheerio';
+import { createHash } from 'node:crypto';
 
 const FETCH_TIMEOUT_MS = 6000;
+
+// Subpages we probe to verify a domain is a real, multi-page business site.
+const VERIFY_PATHS = ['/contact', '/about'];
+
+// Penalty applied to the quality score when no real /contact or /about page
+// could be verified (feeds the MIN_QUALITY_TO_LOG threshold downstream).
+const UNVERIFIED_SCORE_PENALTY = 15;
+
+// Specific soft-404 markers: a page that returns HTTP 200 but is really a
+// "not found" page. Kept narrow so legitimate copy (addresses, years) doesn't
+// trip it.
+const SOFT_404_MARKERS = [
+  'page not found', 'error 404', '404 not found',
+  "page doesn't exist", 'page does not exist', 'page no longer exists',
+];
 
 // Hostname suffixes that are never real business leads
 const SKIP_HOSTNAME_SUFFIXES = [
@@ -108,6 +124,108 @@ async function fetchDomain(domain) {
   return null;
 }
 
+/** Strip scripts/styles/tags and collapse whitespace to get visible page text. */
+function visibleText(html) {
+  return html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ')
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Whether two blocks of visible text are essentially the same page — used to
+ * catch SPA/catch-all handlers that re-serve the homepage for every path.
+ */
+function isSameContent(a, b) {
+  const na = a.toLowerCase();
+  const nb = b.toLowerCase();
+  if (na === nb) return true;
+  const minLen = Math.min(na.length, nb.length);
+  if (minLen === 0) return false;
+  // Near-identical length + identical long prefix ⇒ same underlying page.
+  const lenRatio = minLen / Math.max(na.length, nb.length);
+  if (lenRatio > 0.95) {
+    const prefixLen = Math.min(300, minLen);
+    if (na.slice(0, prefixLen) === nb.slice(0, prefixLen)) return true;
+  }
+  return false;
+}
+
+/**
+ * Fetch a same-domain subpage and decide whether it is a real, distinct page.
+ * True only for a 200 text/html response whose visible text is over ~100 chars,
+ * is not a soft-404, is not a redirect back to the homepage, and is meaningfully
+ * different from the homepage.
+ *
+ * @param {string} baseUrl   scheme://domain that worked for the homepage
+ * @param {string} pathname  e.g. '/contact'
+ * @param {string} homeText  homepage visible text, for catch-all comparison
+ */
+async function isRealSubpage(baseUrl, pathname, homeText) {
+  let res;
+  try {
+    res = await fetchWithTimeout(`${baseUrl}${pathname}`, FETCH_TIMEOUT_MS);
+  } catch {
+    return false;
+  }
+
+  if (!res.ok) return false; // 404 / 5xx / etc.
+
+  // A redirect whose final path is the site root is a "redirect back to homepage".
+  try {
+    const finalPath = new URL(res.url).pathname.replace(/\/+$/, '');
+    if (res.redirected && (finalPath === '' || finalPath === '/')) return false;
+  } catch {
+    // ignore URL parse issues — fall through to content checks
+  }
+
+  const contentType = res.headers.get('content-type') ?? '';
+  if (!contentType.includes('text/html')) return false;
+
+  let html;
+  try {
+    html = await res.text();
+  } catch {
+    return false;
+  }
+
+  const text = visibleText(html);
+  if (text.length < 100) return false; // thin page
+
+  const lowerText = text.toLowerCase();
+  if (SOFT_404_MARKERS.some((m) => lowerText.includes(m))) return false;
+
+  // Catch-all handlers serve the homepage for unknown paths — if the visible
+  // text is essentially the homepage, this is not a distinct subpage.
+  if (isSameContent(text, homeText)) return false;
+
+  return true;
+}
+
+/**
+ * Extract the main body text with nav/header/footer boilerplate removed, so the
+ * content hash reflects a page's unique content rather than shared chrome.
+ */
+function extractMainText($) {
+  const $body = $('body').clone();
+  $body.find('nav, header, footer, script, style, noscript').remove();
+  return $body.text().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Content fingerprint for duplicate-site detection: normalize whitespace,
+ * lowercase, and SHA-256 the first 500 chars of boilerplate-stripped text.
+ * Returns null when there is too little unique content to fingerprint safely
+ * (avoids mass-rejecting thin pages that merely share a few words).
+ */
+function computeContentHash(mainText) {
+  const normalized = mainText.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (normalized.length < 50) return null;
+  return createHash('sha256').update(normalized.slice(0, 500)).digest('hex');
+}
+
 /**
  * Fingerprint a domain: fetch its home page, detect platform, extract
  * contact signals, and compute a quality score.
@@ -203,6 +321,25 @@ export async function fingerprintDomain(domain) {
 
   score = Math.min(score, 100);
 
+  // ── Multi-page verification ──────────────────────────────────────────────
+  // A real business almost always has a working /contact or /about page. Probe
+  // both; a single verified subpage is enough. If neither verifies, don't reject
+  // outright — mark unverified and dock the score so the threshold can decide.
+  const homeText = visibleText(html);
+  let verified = false;
+  for (const pathname of VERIFY_PATHS) {
+    if (await isRealSubpage(url, pathname, homeText)) {
+      verified = true;
+      break;
+    }
+  }
+  if (!verified) {
+    score = Math.max(0, score - UNVERIFIED_SCORE_PENALTY);
+  }
+
+  // ── Content fingerprint (duplicate-site detection) ───────────────────────
+  const contentHash = computeContentHash(extractMainText($));
+
   return {
     domain,
     url,
@@ -212,6 +349,8 @@ export async function fingerprintDomain(domain) {
     socials,
     qualityScore: score,
     hasContact: emailMatches.length > 0 || Object.keys(socials).length > 0,
+    verified,
+    contentHash,
     firstSeenAt: new Date().toISOString(),
   };
 }

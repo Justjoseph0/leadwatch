@@ -26,6 +26,14 @@ create index if not exists leads_platform_idx        on leads (platform);
 create index if not exists leads_quality_score_idx   on leads (quality_score desc);
 create index if not exists leads_first_seen_at_idx   on leads (first_seen_at desc);
 
+-- ── Migration: content_hash (duplicate-content detection) ────────────────────
+-- Fingerprint of the homepage's boilerplate-stripped visible text. Used to
+-- reject templated/duplicate sites: a new lead whose hash already exists on a
+-- different domain is dropped. Idempotent so it is safe to re-run over an
+-- existing database.
+alter table leads add column if not exists content_hash text;
+create index if not exists leads_content_hash_idx    on leads (content_hash);
+
 -- Row Level Security (permissive for now — tighten with actual auth policies later)
 alter table leads enable row level security;
 
