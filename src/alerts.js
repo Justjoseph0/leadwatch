@@ -64,14 +64,22 @@ export async function checkAlerts(lead) {
     if (!matchesRule(lead, rule)) continue;
 
     // Send email notification
+    console.log(`[alerts] Sending notification to ${rule.email_to} for ${lead.domain}...`);
     try {
-      await resend.emails.send({
+      // Resend resolves (does not throw) on API errors — the failure is carried
+      // in the response's `error` field, so check it before claiming success.
+      const { data, error: sendError } = await resend.emails.send({
         from: 'LeadWatch <onboarding@resend.dev>',  // You'll replace this with your verified domain
         to: rule.email_to,
         subject: `New Lead Alert: ${lead.domain}`,
         text: formatLeadEmail(lead),
       });
-      console.log(`[alerts] Sent notification to ${rule.email_to} for ${lead.domain}`);
+
+      if (sendError) {
+        console.error(`[alerts] Failed to send email to ${rule.email_to}:`, sendError.message || sendError);
+      } else {
+        console.log(`[alerts] Sent notification to ${rule.email_to} for ${lead.domain} (id: ${data?.id})`);
+      }
     } catch (err) {
       console.error(`[alerts] Failed to send email to ${rule.email_to}:`, err.message);
     }
